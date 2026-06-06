@@ -112,6 +112,8 @@ workspaces/
 
 ### 1. 思维导图
 
+![Blog Planner 思维导图主页](./blog主页.png)
+
 包含两个子标签页：
 
 #### 博客导图
