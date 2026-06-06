@@ -19,6 +19,7 @@ import GraphNodeComponent from './GraphNodeComponent';
 import TopicEditModal from './TopicEditModal';
 import CategoryEditModal from './CategoryEditModal';
 import MindMapImportView from './MindMapImportView';
+import ConfirmDialog from './ConfirmDialog';
 import { GraphEditContext } from './GraphEditContext';
 import { LayoutDirectionContext } from './LayoutDirectionContext';
 import {
@@ -395,31 +396,72 @@ function GraphCanvas() {
   );
 }
 
-export default function GraphView() {
+interface GraphViewProps {
+  onMindMapDirtyChange?: (dirty: boolean) => void;
+}
+
+export default function GraphView({ onMindMapDirtyChange }: GraphViewProps) {
   const [tab, setTab] = useState<'graph' | 'mindmap'>('graph');
+  const [mmDirty, setMmDirty] = useState(false);
+  const [pendingTab, setPendingTab] = useState<'graph' | null>(null);
+  const [mmDiscardKey, setMmDiscardKey] = useState(0);
+
+  const handleMmDirty = useCallback((dirty: boolean) => {
+    setMmDirty(dirty);
+    onMindMapDirtyChange?.(dirty);
+  }, [onMindMapDirtyChange]);
+
+  useEffect(() => () => { onMindMapDirtyChange?.(false); }, [onMindMapDirtyChange]);
+
+  const trySetTab = (next: 'graph' | 'mindmap') => {
+    if (tab === 'mindmap' && next === 'graph' && mmDirty) {
+      setPendingTab('graph');
+      return;
+    }
+    setTab(next);
+  };
 
   return (
     <div className="gv-wrap">
       <div className="gv-tabs">
-        <button className={`gv-tab${tab === 'graph' ? ' active' : ''}`} onClick={() => setTab('graph')}>
+        <button className={`gv-tab${tab === 'graph' ? ' active' : ''}`} onClick={() => trySetTab('graph')}>
           <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" style={{ marginRight: 5 }}>
             <circle cx="12" cy="12" r="3" /><line x1="3" y1="12" x2="9" y2="12" /><line x1="15" y1="12" x2="21" y2="12" /><line x1="12" y1="3" x2="12" y2="9" /><line x1="12" y1="15" x2="12" y2="21" />
           </svg>
           博客导图
         </button>
-        <button className={`gv-tab${tab === 'mindmap' ? ' active' : ''}`} onClick={() => setTab('mindmap')}>
+        <button className={`gv-tab${tab === 'mindmap' ? ' active' : ''}`} onClick={() => trySetTab('mindmap')}>
           <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" style={{ marginRight: 5 }}>
             <path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z" /><polyline points="14 2 14 8 20 8" /><line x1="16" y1="13" x2="8" y2="13" /><line x1="16" y1="17" x2="8" y2="17" />
           </svg>
           MD 导入
         </button>
       </div>
-      {tab === 'graph' ? (
+      <div className="gv-panel" hidden={tab !== 'graph'}>
         <ReactFlowProvider>
           <GraphCanvas />
         </ReactFlowProvider>
-      ) : (
-        <MindMapImportView />
+      </div>
+      <div className="gv-panel" hidden={tab !== 'mindmap'}>
+        <MindMapImportView key={mmDiscardKey} onDirtyChange={handleMmDirty} />
+      </div>
+
+      {pendingTab && (
+        <ConfirmDialog
+          title="未保存的更改"
+          description="MD 导入中有未保存的修改，切换标签后将丢失这些更改。确定要离开吗？"
+          confirmLabel="离开不保存"
+          cancelLabel="继续编辑"
+          variant="danger"
+          onConfirm={() => {
+            setMmDiscardKey((k) => k + 1);
+            setTab(pendingTab);
+            setPendingTab(null);
+            setMmDirty(false);
+            onMindMapDirtyChange?.(false);
+          }}
+          onCancel={() => setPendingTab(null)}
+        />
       )}
     </div>
   );

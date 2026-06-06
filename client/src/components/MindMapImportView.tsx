@@ -30,6 +30,13 @@ import { toPng, toSvg } from 'html-to-image';
 import { LAYOUT_DIRECTIONS } from '../layout';
 import type { LayoutDirection } from '../api';
 import { createTopic } from '../api';
+import {
+  parseMarkdownOutline,
+  normalizeSnippetLevels,
+  updateOutlineLabel,
+  type OutlineNode,
+} from '../../../shared/markdown-outline';
+import ConfirmDialog from './ConfirmDialog';
 
 // ── History (localStorage) ───────────────────────────────────────────────────
 
@@ -63,7 +70,10 @@ function extractTitle(md: string): string {
   return h1 ? h1[1].trim() : '未命名文档';
 }
 function countNodes(md: string): number {
-  return md.split('\n').filter(l => /^#{1,6}\s/.test(l) || /^\s*([-*+]|\d+\.)\s/.test(l)).length;
+  let n = 0;
+  const walk = (nodes: OutlineNode[]) => { for (const node of nodes) { n++; walk(node.children); } };
+  walk(parseMarkdownOutline(md));
+  return n;
 }
 function fmtDate(iso: string): string {
   return new Date(iso).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' });
@@ -79,6 +89,24 @@ function fmtRelative(iso: string): string {
   return d < 7 ? `${d} 天前` : fmtDate(iso);
 }
 
+// ── Document snapshot (draft / save / undo) ───────────────────────────────────
+
+interface DocSnapshot {
+  mdText: string;
+  editedLabels: Record<string, string>;
+  customColors: Record<string, string>;
+  nodeNotes: Record<string, string>;
+}
+
+function snapshotsEqual(a: DocSnapshot, b: DocSnapshot): boolean {
+  return a.mdText === b.mdText
+    && JSON.stringify(a.editedLabels) === JSON.stringify(b.editedLabels)
+    && JSON.stringify(a.customColors) === JSON.stringify(b.customColors)
+    && JSON.stringify(a.nodeNotes) === JSON.stringify(b.nodeNotes);
+}
+
+type PendingNav = { type: 'reset' } | null;
+
 // ── Markdown parser ──────────────────────────────────────────────────────────
 
 interface MdNode {
@@ -88,26 +116,22 @@ interface MdNode {
   children: MdNode[];
 }
 
-function parseMarkdown(md: string): MdNode[] {
-  const lines = md.split('\n'), roots: MdNode[] = [];
-  const stack: Array<[number, MdNode]> = [];
+function outlineToMdNodes(roots: OutlineNode[]): MdNode[] {
   let counter = 0;
-  const nextId = () => `mm-${++counter}`;
-  const add = (level: number, label: string, lineIndex: number, prefix: string) => {
-    if (!label.trim()) return;
-    const node: MdNode = { id: nextId(), label: label.trim(), level, lineIndex, prefix, children: [] };
-    while (stack.length && stack[stack.length - 1][0] >= level) stack.pop();
-    if (!stack.length) roots.push(node); else stack[stack.length - 1][1].children.push(node);
-    stack.push([level, node]);
-  };
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i].trimEnd();
-    const hm = line.match(/^(#{1,6})\s+(.*)/);
-    if (hm) { add(hm[1].length, hm[2], i, hm[1] + ' '); continue; }
-    const bm = line.match(/^(\s*)([-*+]|\d+\.)\s+(.*)/);
-    if (bm) { const pl = stack.length ? stack[stack.length - 1][0] : 0; add(pl + 1 + Math.floor(bm[1].length / 2), bm[3], i, bm[1] + bm[2] + ' '); }
-  }
-  return roots;
+  const walk = (nodes: OutlineNode[]): MdNode[] =>
+    nodes.map((n) => ({
+      id: `mm-${++counter}`,
+      label: n.label,
+      level: n.level,
+      lineIndex: n.lineIndex,
+      prefix: n.prefix,
+      children: walk(n.children),
+    }));
+  return walk(roots);
+}
+
+function parseMarkdown(md: string): MdNode[] {
+  return outlineToMdNodes(parseMarkdownOutline(md));
 }
 
 function flattenMdNodes(nodes: MdNode[]): MdNode[] {
@@ -154,6 +178,32 @@ function insertNodeInMd(
   return { newMd: lines.join('\n'), insertedLineIndex: insertAt };
 }
 
+function deleteMdNode(md: string, flat: MdNode[], targetId: string): string {
+  const target = flat.find((n) => n.id === targetId);
+  if (!target) return md;
+  const lines = md.split('\n');
+  const sorted = [...flat].sort((a, b) => a.lineIndex - b.lineIndex);
+  const idx = sorted.findIndex((n) => n.id === targetId);
+  let endLine = lines.length;
+  for (let i = idx + 1; i < sorted.length; i++) {
+    if (sorted[i].level <= target.level) {
+      endLine = sorted[i].lineIndex;
+      break;
+    }
+  }
+  lines.splice(target.lineIndex, endLine - target.lineIndex);
+  return lines.join('\n');
+}
+
+function insertMdUnderMdNode(md: string, flat: MdNode[], targetId: string, snippet: string): string {
+  const target = flat.find((n) => n.id === targetId);
+  if (!target || !snippet.trim()) return md;
+  const lines = md.split('\n');
+  const normalized = normalizeSnippetLevels(snippet.trim().split('\n'), target.level);
+  lines.splice(target.lineIndex + 1, 0, ...normalized);
+  return lines.join('\n');
+}
+
 /** Remap label/color/note overrides to new node IDs after a markdown edit. */
 function remapOverridesByLabel(
   overrides: Record<string, string>, oldFlat: MdNode[], newFlat: MdNode[],
@@ -169,7 +219,7 @@ function remapOverridesByLabel(
 
 // ── Tree layout ──────────────────────────────────────────────────────────────
 
-const NODE_W = 200, NODE_H = 52, H_GAP = 64, V_GAP = 32;
+const NODE_W = 280, NODE_H = 52, H_GAP = 64, V_GAP = 32;
 
 function layoutTree(roots: MdNode[], direction: LayoutDirection) {
   const placed: Array<{ id: string; x: number; y: number; label: string; level: number }> = [];
@@ -318,17 +368,26 @@ const nodeTypes = { mindmapNode: MindMapNode };
 interface NodeEditSave { label: string; color: string | null; note: string; }
 interface EditModalProps {
   nodeId: string; label: string; color: string; defaultColor: string; note: string;
+  canDelete: boolean;
   onSave: (id: string, data: NodeEditSave) => void;
   onClose: () => void;
+  onDelete: () => void;
+  onInsertMd: (snippet: string) => void;
   onCreateTopic: (title: string) => Promise<void>;
   onAddSibling: () => void;
   onAddChild: () => void;
 }
 
-function NodeEditModal({ nodeId, label, color, defaultColor, note, onSave, onClose, onCreateTopic, onAddSibling, onAddChild }: EditModalProps) {
+function NodeEditModal({
+  nodeId, label, color, defaultColor, note, canDelete,
+  onSave, onClose, onDelete, onInsertMd, onCreateTopic, onAddSibling, onAddChild,
+}: EditModalProps) {
   const [labelVal, setLabelVal] = useState(label);
   const [colorVal, setColorVal] = useState(color);
   const [noteVal, setNoteVal] = useState(note);
+  const [mdSnippet, setMdSnippet] = useState('');
+  const [showMdInsert, setShowMdInsert] = useState(false);
+  const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const [creating, setCreating] = useState(false);
   const [createStatus, setCreateStatus] = useState<'idle' | 'ok' | 'err'>('idle');
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -396,6 +455,38 @@ function NodeEditModal({ nodeId, label, color, defaultColor, note, onSave, onClo
           <textarea className="mm-modal-textarea mm-note-textarea" value={noteVal}
             onChange={(e) => setNoteVal(e.target.value)} placeholder="添加备注说明…" rows={3} />
 
+          {/* Insert MD */}
+          <div className="mm-modal-section-label">插入 MD 文本</div>
+          {!showMdInsert ? (
+            <button type="button" className="mm-add-node-btn mm-insert-md-toggle" onClick={() => setShowMdInsert(true)}>
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+                <path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z" /><polyline points="14 2 14 8 20 8" />
+              </svg>
+              粘贴 Markdown 为子节点
+            </button>
+          ) : (
+            <div className="mm-insert-md-panel">
+              <textarea
+                className="mm-modal-textarea mm-insert-md-textarea"
+                value={mdSnippet}
+                onChange={(e) => setMdSnippet(e.target.value)}
+                placeholder={'### 子章节\n- 要点一\n- 要点二'}
+                rows={5}
+              />
+              <div className="mm-insert-md-actions">
+                <button type="button" className="mm-modal-footer-btn" onClick={() => { setShowMdInsert(false); setMdSnippet(''); }}>取消</button>
+                <button
+                  type="button"
+                  className="mm-modal-footer-btn primary"
+                  disabled={!mdSnippet.trim()}
+                  onClick={() => { onInsertMd(mdSnippet); setMdSnippet(''); setShowMdInsert(false); }}
+                >
+                  插入为子节点
+                </button>
+              </div>
+            </div>
+          )}
+
           {/* Add sibling / child */}
           <div className="mm-modal-section-label">添加节点</div>
           <div className="mm-add-node-row">
@@ -430,14 +521,32 @@ function NodeEditModal({ nodeId, label, color, defaultColor, note, onSave, onClo
 
           <p className="mm-modal-hint">⌘↵ 保存 &nbsp;·&nbsp; Esc 取消</p>
         </div>
-        <div className="mm-modal-footer">
-          <button className="mm-modal-footer-btn" onClick={onClose}>取消</button>
-          <button className="mm-modal-footer-btn" onClick={handleSave} disabled={!labelVal.trim()}>
-            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"><polyline points="20 6 9 17 4 12" /></svg>
-            保存
-          </button>
+        <div className="mm-modal-footer mm-modal-footer-split">
+          {canDelete ? (
+            <button type="button" className="mm-modal-footer-btn danger" onClick={() => setShowDeleteConfirm(true)}>
+              删除节点
+            </button>
+          ) : <span />}
+          <div className="mm-modal-footer-right">
+            <button type="button" className="mm-modal-footer-btn" onClick={onClose}>取消</button>
+            <button type="button" className="mm-modal-footer-btn primary" onClick={handleSave} disabled={!labelVal.trim()}>
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"><polyline points="20 6 9 17 4 12" /></svg>
+              保存
+            </button>
+          </div>
         </div>
       </div>
+
+      {showDeleteConfirm && (
+        <ConfirmDialog
+          title="删除节点"
+          highlight={labelVal || label}
+          confirmLabel="删除"
+          variant="danger"
+          onConfirm={() => { setShowDeleteConfirm(false); onDelete(); }}
+          onCancel={() => setShowDeleteConfirm(false)}
+        />
+      )}
     </div>
   );
 }
@@ -860,7 +969,11 @@ const MindMapCanvas = forwardRef<CanvasHandle, CanvasProps>(
 
 // ── Main view ─────────────────────────────────────────────────────────────────
 
-export default function MindMapImportView() {
+interface MindMapImportViewProps {
+  onDirtyChange?: (dirty: boolean) => void;
+}
+
+export default function MindMapImportView({ onDirtyChange }: MindMapImportViewProps) {
   const [mdText, setMdText] = useState('');
   const [pasteMode, setPasteMode] = useState(false);
   const [pasteBuffer, setPasteBuffer] = useState('');
@@ -872,13 +985,141 @@ export default function MindMapImportView() {
   const [editingNode, setEditingNode] = useState<{ id: string; label: string; color: string; defaultColor: string; note: string } | null>(null);
   const [history, setHistory] = useState<HistoryEntry[]>(() => loadHistory());
   const [currentEntryId, setCurrentEntryId] = useState<string | null>(null);
+
+  const persistHistory = useCallback((id: string, patch: Partial<HistoryEntry>) => {
+    setHistory(prev => { const next = prev.map(e => e.id === id ? { ...e, ...patch, updatedAt: new Date().toISOString() } : e); saveHistory(next); return next; });
+  }, []);
   const [exportBusy, setExportBusy] = useState<'' | 'png' | 'svg' | 'md'>('');
   const [showExportMenu, setShowExportMenu] = useState(false);
   const [subView, setSubView] = useState<'map' | 'outline' | 'stats'>('map');
+  const [savedSnapshot, setSavedSnapshot] = useState<DocSnapshot | null>(null);
+  const [historyTick, setHistoryTick] = useState(0);
+  const [pendingNav, setPendingNav] = useState<PendingNav>(null);
+  const undoStack = useRef<DocSnapshot[]>([]);
+  const redoStack = useRef<DocSnapshot[]>([]);
   const exportMenuRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<CanvasHandle>(null);
   const hasMd = mdText.trim().length > 0;
   const parsedRoots = useMemo(() => parseMarkdown(mdText), [mdText]);
+
+  const getSnapshot = useCallback((): DocSnapshot => ({
+    mdText, editedLabels, customColors, nodeNotes,
+  }), [mdText, editedLabels, customColors, nodeNotes]);
+
+  const applySnapshot = useCallback((snap: DocSnapshot) => {
+    setMdText(snap.mdText);
+    setEditedLabels(snap.editedLabels);
+    setCustomColors(snap.customColors);
+    setNodeNotes(snap.nodeNotes);
+  }, []);
+
+  const isDirty = hasMd && savedSnapshot !== null && !snapshotsEqual(getSnapshot(), savedSnapshot);
+  const canUndo = undoStack.current.length > 0 && historyTick >= 0;
+  const canRedo = redoStack.current.length > 0 && historyTick >= 0;
+
+  useEffect(() => {
+    onDirtyChange?.(isDirty);
+  }, [isDirty, onDirtyChange]);
+
+  useEffect(() => {
+    if (!isDirty) return;
+    const handler = (e: BeforeUnloadEvent) => { e.preventDefault(); };
+    window.addEventListener('beforeunload', handler);
+    return () => window.removeEventListener('beforeunload', handler);
+  }, [isDirty]);
+
+  const bumpHistory = useCallback(() => setHistoryTick((t) => t + 1), []);
+
+  const mutateDoc = useCallback((updater: (prev: DocSnapshot) => DocSnapshot) => {
+    const current = getSnapshot();
+    undoStack.current.push(current);
+    if (undoStack.current.length > 50) undoStack.current.shift();
+    redoStack.current = [];
+    applySnapshot(updater(current));
+    bumpHistory();
+  }, [getSnapshot, applySnapshot, bumpHistory]);
+
+  const handleUndo = useCallback(() => {
+    const prev = undoStack.current.pop();
+    if (!prev) return;
+    redoStack.current.push(getSnapshot());
+    applySnapshot(prev);
+    bumpHistory();
+  }, [getSnapshot, applySnapshot, bumpHistory]);
+
+  const handleRedo = useCallback(() => {
+    const next = redoStack.current.pop();
+    if (!next) return;
+    undoStack.current.push(getSnapshot());
+    applySnapshot(next);
+    bumpHistory();
+  }, [getSnapshot, applySnapshot, bumpHistory]);
+
+  const initBaseline = useCallback((snap: DocSnapshot) => {
+    applySnapshot(snap);
+    setSavedSnapshot(snap);
+    undoStack.current = [];
+    redoStack.current = [];
+    bumpHistory();
+  }, [applySnapshot, bumpHistory]);
+
+  const handleSaveDocument = useCallback(() => {
+    const snap = getSnapshot();
+    const now = new Date().toISOString();
+    if (currentEntryId) {
+      persistHistory(currentEntryId, {
+        content: snap.mdText,
+        nodeCount: countNodes(snap.mdText),
+        editedLabels: snap.editedLabels,
+        customColors: snap.customColors,
+        nodeNotes: snap.nodeNotes,
+        updatedAt: now,
+      });
+    }
+    setSavedSnapshot(snap);
+    undoStack.current = [];
+    redoStack.current = [];
+    bumpHistory();
+  }, [getSnapshot, currentEntryId, persistHistory, bumpHistory]);
+
+  const requestSubView = useCallback((target: 'map' | 'outline' | 'stats') => {
+    if (target !== subView) setSubView(target);
+  }, [subView]);
+
+  const requestReset = useCallback(() => {
+    if (isDirty) setPendingNav({ type: 'reset' });
+    else {
+      setMdText(''); setPasteMode(false); setPasteBuffer('');
+      setEditedLabels({}); setCustomColors({}); setNodeNotes({});
+      setEditingNode(null); setCurrentEntryId(null); setSearchQuery('');
+      setSubView('map'); setSavedSnapshot(null);
+      undoStack.current = []; redoStack.current = []; bumpHistory();
+    }
+  }, [isDirty, bumpHistory]);
+
+  const confirmLeave = useCallback(() => {
+    if (!pendingNav) return;
+    if (pendingNav.type === 'reset') {
+      setMdText(''); setPasteMode(false); setPasteBuffer('');
+      setEditedLabels({}); setCustomColors({}); setNodeNotes({});
+      setEditingNode(null); setCurrentEntryId(null); setSearchQuery('');
+      setSubView('map'); setSavedSnapshot(null);
+      undoStack.current = []; redoStack.current = []; bumpHistory();
+    }
+    setPendingNav(null);
+  }, [pendingNav, bumpHistory]);
+
+  useEffect(() => {
+    if (!hasMd) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (!(e.metaKey || e.ctrlKey)) return;
+      if (e.key === 'z' && !e.shiftKey) { e.preventDefault(); handleUndo(); }
+      if (e.key === 'z' && e.shiftKey) { e.preventDefault(); handleRedo(); }
+      if (e.key === 's') { e.preventDefault(); if (isDirty) handleSaveDocument(); }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [hasMd, handleUndo, handleRedo, handleSaveDocument, isDirty]);
 
   useEffect(() => {
     if (!showExportMenu) return;
@@ -889,18 +1130,17 @@ export default function MindMapImportView() {
     return () => document.removeEventListener('mousedown', handler);
   }, [showExportMenu]);
 
-  const persistHistory = useCallback((id: string, patch: Partial<HistoryEntry>) => {
-    setHistory(prev => { const next = prev.map(e => e.id === id ? { ...e, ...patch, updatedAt: new Date().toISOString() } : e); saveHistory(next); return next; });
-  }, []);
-
   const loadDoc = useCallback((content: string, filename?: string, existing?: HistoryEntry) => {
     if (existing) {
-      setMdText(existing.content);
-      setEditedLabels(existing.editedLabels);
-      setCustomColors(existing.customColors ?? {});
-      setNodeNotes(existing.nodeNotes ?? {});
+      initBaseline({
+        mdText: existing.content,
+        editedLabels: existing.editedLabels,
+        customColors: existing.customColors ?? {},
+        nodeNotes: existing.nodeNotes ?? {},
+      });
       setCurrentEntryId(existing.id);
       setSearchQuery('');
+      setEditingNode(null);
       return;
     }
     const now = new Date().toISOString();
@@ -911,50 +1151,65 @@ export default function MindMapImportView() {
     };
     setHistory(prev => { const next = [entry, ...prev.filter(e => e.content !== content)]; saveHistory(next); return next; });
     setCurrentEntryId(entry.id);
-    setMdText(content);
-    setEditedLabels({}); setCustomColors({}); setNodeNotes({});
+    initBaseline({ mdText: content, editedLabels: {}, customColors: {}, nodeNotes: {} });
     setSearchQuery('');
-  }, []);
-
-  const handleReset = () => {
-    setMdText(''); setPasteMode(false); setPasteBuffer('');
-    setEditedLabels({}); setCustomColors({}); setNodeNotes({});
-    setEditingNode(null); setCurrentEntryId(null); setSearchQuery(''); setSubView('map');
-  };
+    setEditingNode(null);
+  }, [initBaseline]);
 
   const handleNodeDoubleClick = useCallback((id: string, label: string, color: string, defaultColor: string, note: string) => {
     setEditingNode({ id, label, color, defaultColor, note });
   }, []);
 
   const handleSaveNode = useCallback((id: string, data: NodeEditSave) => {
-    const now = new Date().toISOString();
-    setEditedLabels((prev) => {
-      const nextLabels = { ...prev };
+    mutateDoc((prev) => {
+      const oldFlat = flattenMdNodes(parseMarkdown(prev.mdText));
+      const node = oldFlat.find((n) => n.id === id);
+      const displayLabel = prev.editedLabels[id] ?? node?.label ?? '';
+      let newMd = prev.mdText;
+      if (node && data.label.trim() && data.label.trim() !== displayLabel) {
+        newMd = updateOutlineLabel(prev.mdText, node, data.label.trim());
+      }
+      const nextLabels = { ...prev.editedLabels };
       if (data.label) nextLabels[id] = data.label; else delete nextLabels[id];
-
-      setCustomColors((ccPrev) => {
-        const nextColors = { ...ccPrev };
-        if (data.color) nextColors[id] = data.color; else delete nextColors[id];
-
-        setNodeNotes((nnPrev) => {
-          const nextNotes = { ...nnPrev };
-          if (data.note) nextNotes[id] = data.note; else delete nextNotes[id];
-
-          if (currentEntryId) {
-            persistHistory(currentEntryId, {
-              editedLabels: nextLabels,
-              customColors: nextColors,
-              nodeNotes: nextNotes,
-              updatedAt: now,
-            });
-          }
-          return nextNotes;
-        });
-        return nextColors;
-      });
-      return nextLabels;
+      const nextColors = { ...prev.customColors };
+      if (data.color) nextColors[id] = data.color; else delete nextColors[id];
+      const nextNotes = { ...prev.nodeNotes };
+      if (data.note) nextNotes[id] = data.note; else delete nextNotes[id];
+      return { mdText: newMd, editedLabels: nextLabels, customColors: nextColors, nodeNotes: nextNotes };
     });
-  }, [currentEntryId, persistHistory]);
+  }, [mutateDoc]);
+
+  const handleDeleteNode = useCallback(() => {
+    if (!editingNode) return;
+    mutateDoc((prev) => {
+      const oldFlat = flattenMdNodes(parseMarkdown(prev.mdText));
+      if (oldFlat.length <= 1) return prev;
+      const newMd = deleteMdNode(prev.mdText, oldFlat, editingNode.id);
+      const newFlat = flattenMdNodes(parseMarkdown(newMd));
+      return {
+        mdText: newMd,
+        editedLabels: remapOverridesByLabel(prev.editedLabels, oldFlat, newFlat),
+        customColors: remapOverridesByLabel(prev.customColors, oldFlat, newFlat),
+        nodeNotes: remapOverridesByLabel(prev.nodeNotes, oldFlat, newFlat),
+      };
+    });
+    setEditingNode(null);
+  }, [editingNode, mutateDoc]);
+
+  const handleInsertMd = useCallback((snippet: string) => {
+    if (!editingNode || !snippet.trim()) return;
+    mutateDoc((prev) => {
+      const oldFlat = flattenMdNodes(parseMarkdown(prev.mdText));
+      const newMd = insertMdUnderMdNode(prev.mdText, oldFlat, editingNode.id, snippet);
+      const newFlat = flattenMdNodes(parseMarkdown(newMd));
+      return {
+        mdText: newMd,
+        editedLabels: remapOverridesByLabel(prev.editedLabels, oldFlat, newFlat),
+        customColors: remapOverridesByLabel(prev.customColors, oldFlat, newFlat),
+        nodeNotes: remapOverridesByLabel(prev.nodeNotes, oldFlat, newFlat),
+      };
+    });
+  }, [editingNode, mutateDoc]);
 
   const handleCreateTopic = useCallback(async (title: string) => {
     await createTopic({ title, paths: [], status: 'idea' });
@@ -962,26 +1217,16 @@ export default function MindMapImportView() {
 
   const handleAddNode = useCallback((pos: 'sibling' | 'child') => {
     if (!editingNode) return;
-    const oldRoots = parseMarkdown(mdText);
-    const oldFlat = flattenMdNodes(oldRoots);
-    const { newMd, insertedLineIndex } = insertNodeInMd(mdText, oldFlat, editingNode.id, pos);
-    const newRoots = parseMarkdown(newMd);
-    const newFlat = flattenMdNodes(newRoots);
-    // Remap existing overrides to new IDs
-    const newLabels = remapOverridesByLabel(editedLabels, oldFlat, newFlat);
-    const newColors = remapOverridesByLabel(customColors, oldFlat, newFlat);
-    const newNotes = remapOverridesByLabel(nodeNotes, oldFlat, newFlat);
-    setMdText(newMd);
-    setEditedLabels(newLabels);
-    setCustomColors(newColors);
-    setNodeNotes(newNotes);
-    if (currentEntryId) {
-      persistHistory(currentEntryId, {
-        content: newMd, nodeCount: countNodes(newMd),
-        editedLabels: newLabels, customColors: newColors, nodeNotes: newNotes,
-      });
-    }
-    // Auto-open the edit modal for the newly inserted node
+    const snap = getSnapshot();
+    const oldFlat = flattenMdNodes(parseMarkdown(snap.mdText));
+    const { newMd, insertedLineIndex } = insertNodeInMd(snap.mdText, oldFlat, editingNode.id, pos);
+    const newFlat = flattenMdNodes(parseMarkdown(newMd));
+    mutateDoc(() => ({
+      mdText: newMd,
+      editedLabels: remapOverridesByLabel(snap.editedLabels, oldFlat, newFlat),
+      customColors: remapOverridesByLabel(snap.customColors, oldFlat, newFlat),
+      nodeNotes: remapOverridesByLabel(snap.nodeNotes, oldFlat, newFlat),
+    }));
     const inserted = newFlat.find(n => n.lineIndex === insertedLineIndex);
     if (inserted) {
       const defColor = levelColor(inserted.level);
@@ -989,7 +1234,7 @@ export default function MindMapImportView() {
     } else {
       setEditingNode(null);
     }
-  }, [editingNode, mdText, editedLabels, customColors, nodeNotes, currentEntryId, persistHistory]);
+  }, [editingNode, getSnapshot, mutateDoc]);
 
   const handleExport = useCallback(async (type: 'png' | 'svg' | 'md') => {
     if (!canvasRef.current || exportBusy) return;
@@ -1033,7 +1278,20 @@ export default function MindMapImportView() {
       ) : (
         <div className="mm-canvas-wrap">
           <div className="mm-toolbar">
-            <button className="mm-back-btn" onClick={handleReset}>← 重新导入</button>
+            <button className="mm-back-btn" onClick={requestReset}>← 重新导入</button>
+
+            <div className="mm-doc-actions">
+              {isDirty && <span className="mm-unsaved-badge">未保存</span>}
+              <button type="button" className="mm-doc-btn" disabled={!canUndo} onClick={handleUndo} title="撤销 (⌘Z)">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><polyline points="1 4 1 10 7 10" /><path d="M3.51 15a9 9 0 102.13-9.36L1 10" /></svg>
+                撤销
+              </button>
+              <button type="button" className="mm-doc-btn" disabled={!canRedo} onClick={handleRedo} title="重做 (⌘⇧Z)">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><polyline points="23 4 23 10 17 10" /><path d="M20.49 15a9 9 0 11-2.12-9.36L23 10" /></svg>
+                重做
+              </button>
+              <button type="button" className="mm-save-btn" disabled={!isDirty} onClick={handleSaveDocument} title="保存 (⌘S)">保存</button>
+            </div>
 
             {/* Search */}
             <div className="mm-search-wrap">
@@ -1088,19 +1346,19 @@ export default function MindMapImportView() {
 
           {/* Sub-view tabs */}
           <div className="mm-subtabs">
-            <button className={`mm-subtab${subView === 'map' ? ' active' : ''}`} onClick={() => setSubView('map')}>
+            <button className={`mm-subtab${subView === 'map' ? ' active' : ''}`} onClick={() => requestSubView('map')}>
               <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" style={{ marginRight: 5 }}>
                 <circle cx="12" cy="12" r="3" /><line x1="3" y1="12" x2="9" y2="12" /><line x1="15" y1="12" x2="21" y2="12" /><line x1="12" y1="3" x2="12" y2="9" /><line x1="12" y1="15" x2="12" y2="21" />
               </svg>
               思维导图
             </button>
-            <button className={`mm-subtab${subView === 'outline' ? ' active' : ''}`} onClick={() => setSubView('outline')}>
+            <button className={`mm-subtab${subView === 'outline' ? ' active' : ''}`} onClick={() => requestSubView('outline')}>
               <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" style={{ marginRight: 5 }}>
                 <line x1="8" y1="6" x2="21" y2="6" /><line x1="8" y1="12" x2="21" y2="12" /><line x1="8" y1="18" x2="21" y2="18" /><line x1="3" y1="6" x2="3.01" y2="6" /><line x1="3" y1="12" x2="3.01" y2="12" /><line x1="3" y1="18" x2="3.01" y2="18" />
               </svg>
               时间线
             </button>
-            <button className={`mm-subtab${subView === 'stats' ? ' active' : ''}`} onClick={() => setSubView('stats')}>
+            <button className={`mm-subtab${subView === 'stats' ? ' active' : ''}`} onClick={() => requestSubView('stats')}>
               <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" style={{ marginRight: 5 }}>
                 <line x1="18" y1="20" x2="18" y2="10" /><line x1="12" y1="20" x2="12" y2="4" /><line x1="6" y1="20" x2="6" y2="14" />
               </svg>
@@ -1133,12 +1391,27 @@ export default function MindMapImportView() {
             <NodeEditModal
               nodeId={editingNode.id} label={editingNode.label} color={editingNode.color}
               defaultColor={editingNode.defaultColor} note={editingNode.note}
+              canDelete={flattenMdNodes(parsedRoots).length > 1}
               onSave={handleSaveNode} onClose={() => setEditingNode(null)}
+              onDelete={handleDeleteNode}
+              onInsertMd={handleInsertMd}
               onCreateTopic={handleCreateTopic}
               onAddSibling={() => handleAddNode('sibling')}
               onAddChild={() => handleAddNode('child')} />
           )}
         </div>
+      )}
+
+      {pendingNav && (
+        <ConfirmDialog
+          title="未保存的更改"
+          description="你有未保存的修改，离开后将丢失这些更改。确定要离开吗？"
+          confirmLabel="离开不保存"
+          cancelLabel="继续编辑"
+          variant="danger"
+          onConfirm={confirmLeave}
+          onCancel={() => setPendingNav(null)}
+        />
       )}
     </div>
   );

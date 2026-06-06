@@ -6,6 +6,7 @@ import CoverageView from './components/CoverageView';
 import NewTopicForm from './components/NewTopicForm';
 import CreateWorkspaceModal from './components/CreateWorkspaceModal';
 import ErrorBoundary from './components/ErrorBoundary';
+import ConfirmDialog from './components/ConfirmDialog';
 import { IconSpark, VIEW_ICONS } from './components/Icons';
 import { fetchGraph, fetchTopics, subscribeToUpdates, type View } from './api';
 import { useWorkspace } from './WorkspaceContext';
@@ -25,6 +26,16 @@ export default function App() {
   const [topicCount, setTopicCount] = useState(0);
   const [publishedCount, setPublishedCount] = useState(0);
   const [showCreateWs, setShowCreateWs] = useState(false);
+  const [mmDirty, setMmDirty] = useState(false);
+  const [pendingView, setPendingView] = useState<View | null>(null);
+
+  const trySetView = (next: View) => {
+    if (view === 'graph' && next !== 'graph' && mmDirty) {
+      setPendingView(next);
+      return;
+    }
+    setView(next);
+  };
 
   const refresh = useCallback(() => {
     fetchGraph()
@@ -87,7 +98,7 @@ export default function App() {
               <button
                 key={v.id}
                 className={`sidebar-link ${view === v.id ? 'active' : ''}`}
-                onClick={() => setView(v.id)}
+                onClick={() => trySetView(v.id)}
               >
                 <Icon size={17} />
                 <span>{v.label}</span>
@@ -127,8 +138,8 @@ export default function App() {
 
         <main className="main" key={workspaceId}>
           <ErrorBoundary>
-            {view === 'graph' && <GraphView key={version} />}
-            {view === 'planning' && <PlanningView key={version} onNewTopic={() => setView('new')} />}
+            {view === 'graph' && <GraphView key={version} onMindMapDirtyChange={setMmDirty} />}
+            {view === 'planning' && <PlanningView key={version} onNewTopic={() => trySetView('new')} />}
             {view === 'timeline' && <TimelineView key={version} />}
             {view === 'coverage' && <CoverageView key={version} />}
             {view === 'new' && <NewTopicForm key={version} onCreated={refresh} />}
@@ -137,6 +148,18 @@ export default function App() {
       </div>
 
       {showCreateWs && <CreateWorkspaceModal onClose={() => setShowCreateWs(false)} />}
+
+      {pendingView && (
+        <ConfirmDialog
+          title="未保存的更改"
+          description="MD 导入中有未保存的修改，离开页面后将丢失这些更改。确定要离开吗？"
+          confirmLabel="离开不保存"
+          cancelLabel="继续编辑"
+          variant="danger"
+          onConfirm={() => { setView(pendingView); setPendingView(null); setMmDirty(false); }}
+          onCancel={() => setPendingView(null)}
+        />
+      )}
     </div>
   );
 }
