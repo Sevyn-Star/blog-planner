@@ -1,0 +1,7 @@
+node_modules/
+dist/
+graph.json
+workspaces/*/graph.json
+workspaces/*/layout.json
+.DS_Store
+*.log

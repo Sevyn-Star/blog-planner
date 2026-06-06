@@ -1,0 +1,55 @@
+import { memo, useCallback, type KeyboardEvent, type MouseEvent } from 'react';
+import { Handle, Position, type NodeProps } from 'reactflow';
+import type { GraphNode } from '../api';
+import { STATUS_LABELS } from '../api';
+import { useGraphEdit } from './GraphEditContext';
+import { getHandlePositions, useLayoutDirection } from './LayoutDirectionContext';
+
+const POSITION_MAP = {
+  top: Position.Top,
+  bottom: Position.Bottom,
+  left: Position.Left,
+  right: Position.Right,
+} as const;
+
+function GraphNodeComponent({ id, data }: NodeProps<GraphNode>) {
+  const edit = useGraphEdit();
+  const direction = useLayoutDirection();
+  const handles = getHandlePositions(direction);
+
+  const isCategory = data.type === 'category';
+  const statusClass = data.status || '';
+
+  const handleDoubleClick = useCallback(
+    (e: MouseEvent) => {
+      e.stopPropagation();
+      e.preventDefault();
+      edit?.onEditNode(id, data.type, data.label);
+    },
+    [edit, id, data.type, data.label],
+  );
+
+  return (
+    <div
+      className={`graph-node ${isCategory ? 'category' : `topic ${statusClass}`}`}
+      title={isCategory ? '双击编辑分类' : '双击编辑主题'}
+      onDoubleClick={handleDoubleClick}
+      role="button"
+      tabIndex={0}
+      onKeyDown={(e: KeyboardEvent) => {
+        if (e.key === 'Enter') {
+          edit?.onEditNode(id, data.type, data.label);
+        }
+      }}
+    >
+      <Handle type="target" position={POSITION_MAP[handles.target]} className="graph-handle" />
+      <div className="graph-node-label">{data.label}</div>
+      {!isCategory && data.status && (
+        <div className="graph-node-status">{STATUS_LABELS[data.status]}</div>
+      )}
+      <Handle type="source" position={POSITION_MAP[handles.source]} className="graph-handle" />
+    </div>
+  );
+}
+
+export default memo(GraphNodeComponent);
