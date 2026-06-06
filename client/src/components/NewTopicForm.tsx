@@ -1,5 +1,7 @@
 import { useEffect, useState, type FormEvent } from 'react';
-import { createTopic, fetchTaxonomyPaths } from '../api';
+import { createTopic, fetchTaxonomyPaths, STATUS_OPTIONS } from '../api';
+import NumberStepper from './NumberStepper';
+import Select from './Select';
 
 export default function NewTopicForm({ onCreated }: { onCreated: () => void }) {
   const [paths, setPaths] = useState<string[]>([]);
@@ -73,22 +75,15 @@ export default function NewTopicForm({ onCreated }: { onCreated: () => void }) {
           <div className="form-row">
             <div className="form-group">
               <label>状态</label>
-              <select value={status} onChange={(e) => setStatus(e.target.value)}>
-                <option value="idea">💡 想法</option>
-                <option value="outline">📝 大纲</option>
-                <option value="draft">✏️ 草稿</option>
-                <option value="published">✅ 已发布</option>
-              </select>
+              <Select
+                value={status}
+                onChange={setStatus}
+                options={[...STATUS_OPTIONS]}
+              />
             </div>
             <div className="form-group">
               <label>优先级（1 最高）</label>
-              <input
-                type="number"
-                min="1"
-                max="10"
-                value={priority}
-                onChange={(e) => setPriority(e.target.value)}
-              />
+              <NumberStepper value={priority} onChange={setPriority} min={1} max={10} />
             </div>
           </div>
         </div>
@@ -97,12 +92,12 @@ export default function NewTopicForm({ onCreated }: { onCreated: () => void }) {
           <h3 className="form-section-title">分类与路径</h3>
           <div className="form-group">
             <label>层级路径</label>
-            <select value={selectedPath} onChange={(e) => setSelectedPath(e.target.value)}>
-              <option value="">选择已有路径...</option>
-              {paths.map((p) => (
-                <option key={p} value={p}>{p}</option>
-              ))}
-            </select>
+            <Select
+              value={selectedPath}
+              onChange={setSelectedPath}
+              placeholder="选择已有路径..."
+              options={paths.map((p) => ({ value: p, label: p }))}
+            />
           </div>
           <div className="form-group">
             <label>或自定义路径（用 / 分隔）</label>
@@ -128,6 +123,7 @@ export default function NewTopicForm({ onCreated }: { onCreated: () => void }) {
             <label>计划写作日期</label>
             <input
               type="date"
+              className="date-input"
               value={plannedDate}
               onChange={(e) => setPlannedDate(e.target.value)}
             />

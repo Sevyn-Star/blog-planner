@@ -5,6 +5,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import {
   createTopic,
+  deleteTopic,
   findDuplicates,
   getCoverageStats,
   getPlanningItems,
@@ -113,6 +114,17 @@ app.put('/api/topics/:id', (req, res) => {
     const topic = updateTopic(ws, req.params.id, req.body);
     refresh(ws);
     res.json(topic);
+  } catch (err) {
+    res.status(400).json({ error: (err as Error).message });
+  }
+});
+
+app.delete('/api/topics/:id', (req, res) => {
+  const ws = getWorkspaceId(req);
+  try {
+    deleteTopic(ws, req.params.id);
+    refresh(ws);
+    res.status(204).send();
   } catch (err) {
     res.status(400).json({ error: (err as Error).message });
   }

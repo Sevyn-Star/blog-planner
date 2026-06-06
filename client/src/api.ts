@@ -51,7 +51,7 @@ export async function createWorkspace(name: string, description?: string): Promi
 export interface GraphNode {
   id: string;
   label: string;
-  type: 'category' | 'topic';
+  type: 'category' | 'topic' | 'outline';
   status?: 'idea' | 'outline' | 'draft' | 'published';
   topicType?: 'topic' | 'series' | 'pillar';
   created?: string;
@@ -60,6 +60,8 @@ export interface GraphNode {
   priority?: number;
   tags?: string[];
   filePath?: string;
+  parentTopicId?: string;
+  outlineLevel?: number;
 }
 
 export interface GraphEdge {
@@ -209,6 +211,14 @@ export async function updateTopic(
   }
 }
 
+export async function deleteTopic(id: string): Promise<void> {
+  const res = await fetch(wsUrl(`/topics/${id}`), { method: 'DELETE' });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.error || '删除失败');
+  }
+}
+
 export async function fetchPlanning(): Promise<PlanningItem[]> {
   const res = await fetch(wsUrl('/planning'));
   return res.json();
@@ -288,3 +298,10 @@ export const STATUS_COLORS: Record<string, string> = {
   draft: '#3b82f6',
   published: '#22c55e',
 };
+
+export const STATUS_OPTIONS = [
+  { value: 'idea', label: '想法', icon: '💡', color: STATUS_COLORS.idea },
+  { value: 'outline', label: '大纲', icon: '📝', color: STATUS_COLORS.outline },
+  { value: 'draft', label: '草稿', icon: '✏️', color: STATUS_COLORS.draft },
+  { value: 'published', label: '已发布', icon: '✅', color: STATUS_COLORS.published },
+] as const;

@@ -3,19 +3,27 @@ import {
   fetchTopic,
   fetchTaxonomyPaths,
   updateTopic,
-  STATUS_LABELS,
+  deleteTopic,
+  STATUS_OPTIONS,
 } from '../api';
 import Modal from './Modal';
+import ConfirmDialog from './ConfirmDialog';
+import NumberStepper from './NumberStepper';
+import Select from './Select';
+import MarkdownEditor from './MarkdownEditor';
 
 interface Props {
   topicId: string;
   onClose: () => void;
   onSaved: () => void;
+  onOpenTopic?: (topicId: string) => void;
 }
 
-export default function TopicEditModal({ topicId, onClose, onSaved }: Props) {
+export default function TopicEditModal({ topicId, onClose, onSaved, onOpenTopic }: Props) {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+  const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const [error, setError] = useState('');
   const [paths, setPaths] = useState<string[]>([]);
 
@@ -86,7 +94,24 @@ export default function TopicEditModal({ topicId, onClose, onSaved }: Props) {
     }
   }
 
+  async function handleDelete() {
+    setDeleting(true);
+    setError('');
+    try {
+      await deleteTopic(topicId);
+      setShowDeleteConfirm(false);
+      onSaved();
+      onClose();
+    } catch (err) {
+      setError((err as Error).message);
+      setShowDeleteConfirm(false);
+    } finally {
+      setDeleting(false);
+    }
+  }
+
   return (
+    <>
     <Modal title="编辑主题" onClose={onClose}>
       {loading ? (
         <div className="modal-body empty-state">
@@ -105,32 +130,26 @@ export default function TopicEditModal({ topicId, onClose, onSaved }: Props) {
           <div className="form-row">
             <div className="form-group">
               <label>状态</label>
-              <select value={status} onChange={(e) => setStatus(e.target.value)}>
-                {Object.entries(STATUS_LABELS).map(([k, v]) => (
-                  <option key={k} value={k}>{v}</option>
-                ))}
-              </select>
+              <Select
+                value={status}
+                onChange={setStatus}
+                options={[...STATUS_OPTIONS]}
+              />
             </div>
             <div className="form-group">
               <label>优先级</label>
-              <input
-                type="number"
-                min="1"
-                max="10"
-                value={priority}
-                onChange={(e) => setPriority(e.target.value)}
-              />
+              <NumberStepper value={priority} onChange={setPriority} min={1} max={10} />
             </div>
           </div>
 
           <div className="form-group">
             <label>层级路径</label>
-            <select value={path} onChange={(e) => setPath(e.target.value)}>
-              <option value="">选择路径...</option>
-              {paths.map((p) => (
-                <option key={p} value={p}>{p}</option>
-              ))}
-            </select>
+            <Select
+              value={path}
+              onChange={setPath}
+              placeholder="选择路径..."
+              options={paths.map((p) => ({ value: p, label: p }))}
+            />
           </div>
 
           <div className="form-group">
@@ -145,11 +164,11 @@ export default function TopicEditModal({ topicId, onClose, onSaved }: Props) {
           <div className="form-row">
             <div className="form-group">
               <label>计划日期</label>
-              <input type="date" value={plannedDate} onChange={(e) => setPlannedDate(e.target.value)} />
+              <input type="date" className="date-input" value={plannedDate} onChange={(e) => setPlannedDate(e.target.value)} />
             </div>
             <div className="form-group">
               <label>发布日期</label>
-              <input type="date" value={publishedDate} onChange={(e) => setPublishedDate(e.target.value)} />
+              <input type="date" className="date-input" value={publishedDate} onChange={(e) => setPublishedDate(e.target.value)} />
             </div>
           </div>
 
@@ -165,22 +184,44 @@ export default function TopicEditModal({ topicId, onClose, onSaved }: Props) {
 
           <div className="form-group">
             <label>正文（Markdown）</label>
-            <textarea
-              className="content-textarea"
+            <MarkdownEditor
               value={content}
-              onChange={(e) => setContent(e.target.value)}
-              rows={8}
+              onChange={setContent}
+              onOpenTopic={onOpenTopic}
             />
           </div>
 
-          <div className="modal-actions">
-            <button type="button" className="btn btn-ghost" onClick={onClose}>取消</button>
-            <button type="submit" className="btn btn-primary" disabled={saving || !title}>
-              {saving ? '保存中...' : '保存'}
+          <div className="modal-actions modal-actions-split">
+            <button
+              type="button"
+              className="btn btn-danger"
+              onClick={() => setShowDeleteConfirm(true)}
+              disabled={saving || deleting}
+            >
+              删除主题
             </button>
+            <div className="modal-actions-right">
+              <button type="button" className="btn btn-ghost" onClick={onClose} disabled={deleting}>取消</button>
+              <button type="submit" className="btn btn-primary" disabled={saving || deleting || !title}>
+                {saving ? '保存中...' : '保存'}
+              </button>
+            </div>
           </div>
         </form>
       )}
     </Modal>
+
+    {showDeleteConfirm && (
+      <ConfirmDialog
+        title="删除主题"
+        highlight={title || topicId}
+        confirmLabel="删除"
+        variant="danger"
+        loading={deleting}
+        onConfirm={handleDelete}
+        onCancel={() => setShowDeleteConfirm(false)}
+      />
+    )}
+    </>
   );
 }

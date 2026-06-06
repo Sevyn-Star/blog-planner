@@ -28,7 +28,7 @@ export interface Topic {
 export interface GraphNode {
   id: string;
   label: string;
-  type: 'category' | 'topic';
+  type: 'category' | 'topic' | 'outline';
   status?: TopicMeta['status'];
   topicType?: TopicMeta['type'];
   created?: string;
@@ -37,6 +37,8 @@ export interface GraphNode {
   priority?: number;
   tags?: string[];
   filePath?: string;
+  parentTopicId?: string;
+  outlineLevel?: number;
 }
 
 export interface GraphEdge {

@@ -107,6 +107,7 @@ export default function TimelineView() {
           topicId={editingId}
           onClose={() => setEditingId(null)}
           onSaved={load}
+          onOpenTopic={setEditingId}
         />
       )}
     </div>

@@ -38,6 +38,7 @@ const LEGEND = [
   { color: '#fbbf24', label: '大纲' },
   { color: '#60a5fa', label: '草稿' },
   { color: '#4ade80', label: '已发布' },
+  { color: '#c4b5fd', label: '正文节点', dashed: true },
 ];
 
 const STATUS_ZH: Record<string, string> = {
@@ -152,8 +153,12 @@ function GraphCanvas() {
 
   const onNodeDoubleClick: NodeMouseHandler = useCallback(
     (_event, node) => {
-      const type = node.data?.type as 'category' | 'topic';
+      const type = node.data?.type as 'category' | 'topic' | 'outline';
       const label = (node.data?.label as string) || '';
+      if (type === 'outline' && node.data?.parentTopicId) {
+        openEditor(node.data.parentTopicId as string, 'topic', label);
+        return;
+      }
       if (type === 'topic' || type === 'category') openEditor(node.id, type, label);
     },
     [openEditor],
@@ -360,6 +365,7 @@ function GraphCanvas() {
               <MiniMap className="graph-minimap"
                 nodeColor={(n) => {
                   if (n.data?.type === 'category') return '#818cf8';
+                  if (n.data?.type === 'outline') return '#c4b5fd';
                   const s = n.data?.status;
                   if (s === 'published') return '#4ade80';
                   if (s === 'draft') return '#60a5fa';
@@ -372,7 +378,12 @@ function GraphCanvas() {
           </div>
 
           {editingTopicId && (
-            <TopicEditModal topicId={editingTopicId} onClose={() => setEditingTopicId(null)} onSaved={load} />
+            <TopicEditModal
+              topicId={editingTopicId}
+              onClose={() => setEditingTopicId(null)}
+              onSaved={load}
+              onOpenTopic={setEditingTopicId}
+            />
           )}
           {editingCategory && (
             <CategoryEditModal path={editingCategory.path} label={editingCategory.label}

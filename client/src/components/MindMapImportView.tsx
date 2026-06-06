@@ -352,8 +352,17 @@ function NodeEditModal({ nodeId, label, color, defaultColor, note, onSave, onClo
     finally { setCreating(false); }
   };
 
+  const mouseDownTargetRef = useRef<EventTarget | null>(null);
+
   return (
-    <div className="mm-modal-overlay" onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}>
+    <div
+      className="mm-modal-overlay"
+      onMouseDown={(e) => { mouseDownTargetRef.current = e.target; }}
+      onMouseUp={(e) => {
+        if (e.target === e.currentTarget && mouseDownTargetRef.current === e.currentTarget) onClose();
+        mouseDownTargetRef.current = null;
+      }}
+    >
       <div className="mm-modal" style={{ '--node-color': colorVal } as React.CSSProperties}>
         <div className="mm-modal-header">
           <span className="mm-modal-dot" style={{ background: colorVal }} />
@@ -530,10 +539,21 @@ function OutlineView({
 
 function StatsView({ roots, editedLabels }: { roots: MdNode[]; editedLabels: Record<string, string> }) {
   const flat = useMemo(() => flattenMdNodes(roots), [roots]);
+  const [expandedLevel, setExpandedLevel] = useState<number | null>(null);
+  const [expandedRoot, setExpandedRoot] = useState<string | null>(null);
 
   const levelCounts = useMemo(() => {
     const m: Record<number, number> = {};
     for (const n of flat) m[n.level] = (m[n.level] ?? 0) + 1;
+    return m;
+  }, [flat]);
+
+  const levelNodes = useMemo(() => {
+    const m: Record<number, MdNode[]> = {};
+    for (const n of flat) {
+      if (!m[n.level]) m[n.level] = [];
+      m[n.level].push(n);
+    }
     return m;
   }, [flat]);
 
@@ -575,16 +595,42 @@ function StatsView({ roots, editedLabels }: { roots: MdNode[]; editedLabels: Rec
           const count = levelCounts[level];
           const color = levelColor(level);
           const pct = Math.round((count / maxCount) * 100);
+          const levelLabel = level <= 6 ? `H${level} 标题` : '列表项';
+          const isOpen = expandedLevel === level;
+          const nodes = levelNodes[level] ?? [];
           return (
-            <div key={level} className="mm-stats-bar-row">
-              <div className="mm-stats-bar-label">
-                <span className="mm-stats-bar-dot" style={{ background: color }} />
-                <span style={{ color }}>{level <= 6 ? `H${level} 标题` : '列表项'}</span>
+            <div key={level} className="mm-stats-level-group">
+              <div
+                className={`mm-stats-bar-row mm-stats-bar-row-clickable${isOpen ? ' expanded' : ''}`}
+                onClick={() => setExpandedLevel(isOpen ? null : level)}
+                title="点击查看该层节点"
+              >
+                <div className="mm-stats-bar-label">
+                  <span className="mm-stats-bar-dot" style={{ background: color }} />
+                  <span style={{ color }}>{levelLabel}</span>
+                  <span className="mm-stats-expand-arrow" style={{ color }}>{isOpen ? '▾' : '▸'}</span>
+                </div>
+                <div className="mm-stats-bar-track">
+                  <div className="mm-stats-bar-fill" style={{ width: `${pct}%`, background: `linear-gradient(90deg,${color}cc,${color}55)` }} />
+                </div>
+                <span className="mm-stats-bar-count" style={{ color }}>{count}</span>
               </div>
-              <div className="mm-stats-bar-track">
-                <div className="mm-stats-bar-fill" style={{ width: `${pct}%`, background: `linear-gradient(90deg,${color}cc,${color}55)` }} />
-              </div>
-              <span className="mm-stats-bar-count" style={{ color }}>{count}</span>
+              {isOpen && (
+                <div className="mm-stats-node-list">
+                  {nodes.map((n, i) => {
+                    const label = editedLabels[n.id] ?? n.label;
+                    return (
+                      <div key={n.id} className="mm-stats-node-item" style={{ borderLeftColor: color }}>
+                        <span className="mm-stats-node-index" style={{ color }}>{i + 1}</span>
+                        <span className="mm-stats-node-label" title={label}>{label}</span>
+                        {n.children.length > 0 && (
+                          <span className="mm-stats-node-sub" style={{ color }}>{n.children.length} 子节点</span>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
             </div>
           );
         })}
@@ -597,16 +643,45 @@ function StatsView({ roots, editedLabels }: { roots: MdNode[]; editedLabels: Rec
           const pct = Math.round((sub / Math.max(1, flat.length)) * 100);
           const color = levelColor(r.level);
           const label = editedLabels?.[r.id] ?? r.label;
+          const isOpen = expandedRoot === r.id;
+          const children = flattenMdNodes([r]).filter(n => n.id !== r.id);
           return (
-            <div key={r.id} className="mm-stats-bar-row">
-              <div className="mm-stats-bar-label">
-                <span className="mm-stats-bar-dot" style={{ background: color }} />
-                <span style={{ color, maxWidth: 140, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', display: 'inline-block' }} title={label}>{label}</span>
+            <div key={r.id} className="mm-stats-level-group">
+              <div
+                className={`mm-stats-bar-row mm-stats-bar-row-clickable${isOpen ? ' expanded' : ''}`}
+                onClick={() => setExpandedRoot(isOpen ? null : r.id)}
+                title="点击查看子节点"
+              >
+                <div className="mm-stats-bar-label">
+                  <span className="mm-stats-bar-dot" style={{ background: color }} />
+                  <span style={{ color, maxWidth: 130, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', display: 'inline-block' }} title={label}>{label}</span>
+                  <span className="mm-stats-expand-arrow" style={{ color }}>{isOpen ? '▾' : '▸'}</span>
+                </div>
+                <div className="mm-stats-bar-track">
+                  <div className="mm-stats-bar-fill" style={{ width: `${pct}%`, background: `linear-gradient(90deg,${color}aa,${color}33)` }} />
+                </div>
+                <span className="mm-stats-bar-count" style={{ color }}>{sub} 节点</span>
               </div>
-              <div className="mm-stats-bar-track">
-                <div className="mm-stats-bar-fill" style={{ width: `${pct}%`, background: `linear-gradient(90deg,${color}aa,${color}33)` }} />
-              </div>
-              <span className="mm-stats-bar-count" style={{ color }}>{sub} 节点</span>
+              {isOpen && (
+                <div className="mm-stats-node-list">
+                  {children.map((n, i) => {
+                    const nodeLabel = editedLabels[n.id] ?? n.label;
+                    const nodeColor = levelColor(n.level);
+                    return (
+                      <div key={n.id} className="mm-stats-node-item" style={{ borderLeftColor: nodeColor }}>
+                        <span className="mm-stats-node-index" style={{ color: nodeColor }}>{i + 1}</span>
+                        <span className="mm-stats-node-badge" style={{ background: `${nodeColor}22`, color: nodeColor, borderColor: `${nodeColor}44` }}>
+                          {n.level <= 6 ? `H${n.level}` : '•'}
+                        </span>
+                        <span className="mm-stats-node-label" title={nodeLabel}>{nodeLabel}</span>
+                        {n.children.length > 0 && (
+                          <span className="mm-stats-node-sub" style={{ color: nodeColor }}>{n.children.length} 子</span>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
             </div>
           );
         })}

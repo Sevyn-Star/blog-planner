@@ -128,7 +128,7 @@ export default function App() {
         <main className="main" key={workspaceId}>
           <ErrorBoundary>
             {view === 'graph' && <GraphView key={version} />}
-            {view === 'planning' && <PlanningView key={version} />}
+            {view === 'planning' && <PlanningView key={version} onNewTopic={() => setView('new')} />}
             {view === 'timeline' && <TimelineView key={version} />}
             {view === 'coverage' && <CoverageView key={version} />}
             {view === 'new' && <NewTopicForm key={version} onCreated={refresh} />}

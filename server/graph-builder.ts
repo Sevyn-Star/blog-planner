@@ -13,6 +13,7 @@ import type {
   TopicLink,
   TopicMeta,
 } from './types.js';
+import { outlineRootsForTopic, type OutlineNode } from './markdown-outline.js';
 import { getWorkspacePaths, resolveWorkspaceId } from './workspace.js';
 
 const ROOT = path.resolve(import.meta.dirname, '..');
@@ -137,6 +138,36 @@ function ensureCategoryNodes(nodes: Map<string, GraphNode>, categoryPath: string
   }
 }
 
+function addTopicOutlineNodes(
+  topicId: string,
+  content: string,
+  nodes: Map<string, GraphNode>,
+  edges: GraphEdge[],
+  edgeSet: Set<string>,
+) {
+  const roots = outlineRootsForTopic(content);
+  if (!roots.length) return;
+
+  const walk = (parentId: string, node: OutlineNode, path: string) => {
+    const id = `outline:${topicId}:${path}`;
+    nodes.set(id, {
+      id,
+      label: node.label,
+      type: 'outline',
+      parentTopicId: topicId,
+      outlineLevel: node.level,
+    });
+    const edgeId = `${parentId}->${id}`;
+    if (!edgeSet.has(edgeId)) {
+      edgeSet.add(edgeId);
+      edges.push({ id: edgeId, source: parentId, target: id, type: 'hierarchy' });
+    }
+    node.children.forEach((child, i) => walk(id, child, `${path}.${i}`));
+  };
+
+  roots.forEach((root, i) => walk(topicId, root, String(i)));
+}
+
 function ensureCategoryHierarchyEdges(
   categoryPath: string,
   edges: GraphEdge[],
@@ -196,6 +227,8 @@ export function buildGraph(workspaceId: string, topics: Topic[]): ContentGraph {
         });
       }
     }
+
+    addTopicOutlineNodes(meta.id, topic.content, nodes, edges, edgeSet);
   }
 
   const topicIds = new Set(topics.map((t) => t.meta.id));
@@ -414,6 +447,15 @@ export function updateTopic(
   fs.writeFileSync(existing.filePath, file, 'utf-8');
 
   return { meta, content, filePath: existing.filePath };
+}
+
+export function deleteTopic(workspaceId: string, id: string): void {
+  const topics = loadTopics(workspaceId);
+  const existing = topics.find((t) => t.meta.id === id);
+  if (!existing) {
+    throw new Error(`主题 "${id}" 未找到`);
+  }
+  fs.unlinkSync(existing.filePath);
 }
 
 function renameInTaxonomyFile(workspaceId: string, oldPath: string, newPath: string) {
